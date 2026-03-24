@@ -1,54 +1,29 @@
-# 🛡️ Análise Técnica: Port Scanner com Python (Sockets)
+# 🛡️ Análise Técnica: Port Scanner TCP com Python (Sockets)
 
-Este projeto documenta a criação de uma ferramenta de reconhecimento de rede (Footprinting) que opera diretamente na camada de transporte do modelo OSI. O objetivo foi entender a interação entre o código Python e a pilha TCP/IP do kernel.
+Este projeto consiste em uma ferramenta de reconhecimento de rede (Footprinting) que interage diretamente com a pilha TCP/IP do sistema operacional para identificar portas abertas em um host alvo.
 
----
+## 🏗️ 1. Arquitetura do Socket
+Ao utilizar a biblioteca `socket` do Python, o script solicita ao kernel a criação de um endpoint de comunicação.
+* **`socket.AF_INET`**: Define a família de endereços como IPv4.
+* **`socket.SOCK_STREAM`**: Especifica o protocolo de transporte **TCP** (Transmission Control Protocol). Diferente do UDP, o TCP é orientado à conexão, o que permite validar o estado da porta através do handshake.
 
-### 🔍 1. A Biblioteca Socket e a Interface do Kernel
-O comando `socket.socket(socket.AF_INET, socket.SOCK_STREAM)` não apenas cria um objeto em Python, ele solicita ao sistema operacional a abertura de um descritor de arquivo de rede.
+## 🤝 2. Mecanismo de Detecção (TCP Three-Way Handshake)
+O scanner funciona tentando completar o processo de abertura de conexão do protocolo TCP:
+1.  **SYN**: O script envia um pacote de sincronização para a porta alvo.
+2.  **Resposta do Alvo**:
+    * **SYN-ACK**: A porta está **ABERTA** e pronta para receber conexões.
+    * **RST (Reset)**: O host responde ativamente que a porta está **FECHADA**.
+    * **Sem Resposta (Drop)**: Indica que a porta está **FILTRADA** por um firewall ou o host está offline.
 
-* **AF_INET (Address Family):** Especifica que o scanner utilizará endereços **IPv4**. Se o objetivo fosse escanear redes IPv6, seria necessário utilizar `AF_INET6`.
-* **SOCK_STREAM:** Define que o tipo de socket é orientado a fluxo (Stream), o que invoca o protocolo **TCP**. O TCP é escolhido para varreduras de precisão porque exige a confirmação da conexão, ao contrário do `SOCK_DGRAM` (UDP), que é "fire and forget".
+## 🛠️ 3. Implementação com `connect_ex()`
+O método `connect_ex()` é utilizado por ser mais eficiente em scripts de varredura. Em vez de lançar uma exceção que interromperia o fluxo do código, ele retorna um código de erro do sistema (errno):
+* **Retorno 0**: Indica sucesso na operação. O handshake foi completado (Porta Aberta).
+* **Retorno != 0**: Indica falha na conexão. Os códigos comuns são 111 (Connection refused no Linux) ou 10061 (no Windows).
 
----
+## ⏱️ 4. Gerenciamento de Timeout
+O uso de `socket.setdefaulttimeout()` é crítico para a performance da ferramenta. Sem a definição de um tempo limite (ex: 1 segundo), o script herdaria o timeout padrão do sistema operacional, que pode chegar a 30 segundos por porta. Isso tornaria a varredura inviável em ambientes com firewalls que simplesmente descartam pacotes sem responder (DROP).
 
-### 🤝 2. O Mecanismo de Conexão (TCP Three-Way Handshake)
-O script funciona tentando completar o aperto de mão de três vias. O estado da porta é determinado pela resposta do kernel do alvo:
-
-1.  **SYN (Synchronize):** O script envia um pacote com a flag SYN ativa para o IP e porta alvo.
-2.  **Resposta do Alvo:**
-    * **SYN-ACK:** A porta está **ABERTA** e pronta para receber conexões.
-    * **RST (Reset):** O alvo recebeu o pedido, mas a porta está **FECHADA**. O kernel do alvo encerra a tentativa imediatamente.
-    * **Sem Resposta (Timeout):** O pacote foi descartado (**DROP**) ou rejeitado por um firewall. A porta é considerada **FILTRADA**.
-
----
-
-### 💻 3. Lógica de Programação: `connect_ex()` vs `connect()`
-A escolha do método `connect_ex()` é puramente técnica e voltada para a eficiência:
-
-* **`connect()`:** Lança uma exceção (erro) se a porta estiver fechada. Isso exigiria um bloco `try/except` para cada porta, tornando o código mais lento e verboso.
-* **`connect_ex()`:** Retorna um código de erro numérico direto do sistema (C-style error code).
-    * **Retorno 0:** A operação foi bem-sucedida (Porta Aberta).
-    * **Retorno 111 (Linux) / 10061 (Windows):** Conexão recusada (Porta Fechada).
-
----
-
-### ⏱️ 4. Gestão de Timeouts e Comportamento de Firewall
-O uso de `socket.setdefaulttimeout()` é a única forma de evitar que o scanner fique "preso" em portas filtradas. 
-
-Quando um firewall está presente, ele não responde com um pacote RST (que fecharia a conexão na hora); ele simplesmente ignora o pacote SYN. Sem um timeout definido, o script esperaria o tempo padrão do sistema (que pode chegar a 30-60 segundos por porta), inviabilizando a ferramenta.
-
----
-
-### 🛡️ 5. Visão de SOC (Detecção e Telemetria)
-Embora o script seja simples, o rastro digital gerado em um ambiente monitorado como o **Wazuh** é evidente:
-
-* **Sysmon Event ID 3 (Network Connection):** Cada tentativa de conexão gera um log. Um analista SOC identificará o ataque ao notar centenas de eventos ID 3 originados do mesmo `ProcessID` (seu script python) destinados a portas diferentes em um intervalo curto de tempo.
-* **Detecção de Varredura:** O SIEM utiliza contadores (thresholds). Se um único IP de origem gera mais de X conexões TCP falhas em Y segundos, o alerta de **Port Sweeping** ou **Reconnaissance** é disparado automaticamente.
-
----
-
-### 📝 Resumo de Aprendizado Técnico
-* **Camada OSI:** O script opera na Camada 4 (Transporte).
-* **Primitivas de Rede:** Uso de `AF_INET` e `SOCK_STREAM` para manipulação de bits na rede.
-* **Tratamento de Erros:** Utilização de códigos de retorno do kernel para determinar estados de porta.
+## 🛡️ 5. Visão de Monitoramento (Blue Team)
+A execução deste script gera telemetria que pode ser detectada por sistemas de monitoramento como Wazuh ou ferramentas de análise de tráfego:
+* **Sysmon Event ID 3 (Network Connection)**: Registra múltiplas tentativas de conexão originadas do mesmo processo para portas sequenciais em um curto intervalo de tempo.
+* **Detecção de SIEM**: O padrão de conexões rápidas e incompletas caracteriza uma atividade de "Reconnaissance" (Reconhecimento), permitindo a criação de alertas baseados em volume de tentativas de conexão por IP de origem.
