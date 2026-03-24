@@ -1,25 +1,54 @@
-# Port Scanner com Python (Sockets) 🛡️
+# 🛡️ Análise Técnica: Port Scanner com Python (Sockets)
 
-Criei este projeto para entender, na prática, como ferramentas de varredura (como o Nmap) funcionam "por baixo dos panos".
+Este projeto documenta a criação de uma ferramenta de reconhecimento de rede (Footprinting) que opera diretamente na camada de transporte do modelo OSI. O objetivo foi entender a interação entre o código Python e a pilha TCP/IP do kernel.
 
-A ideia foi sair da teoria e escrever um script que interage diretamente com o protocolo TCP/IP. Em vez de apenas usar uma ferramenta pronta, desenvolvi a lógica de conexão socket para verificar manualmente se uma porta está aberta ou fechada.
+---
 
-## 🧠 O que aprendi com esse lab
-* **Manipulação de Sockets:** Como criar conexões de rede "cruas" usando a biblioteca nativa do Python.
-* **Lógica de Redes:** Entendi na prática o comportamento do *TCP Handshake*. Se o servidor não responde, a porta está fechada ou filtrada.
-* **Tratamento de Erros:** Aprendi a usar `try/except` e timeouts para evitar que o script trave quando um IP não existe.
+### 🔍 1. A Biblioteca Socket e a Interface do Kernel
+O comando `socket.socket(socket.AF_INET, socket.SOCK_STREAM)` não apenas cria um objeto em Python, ele solicita ao sistema operacional a abertura de um descritor de arquivo de rede.
 
-## ⚙️ Como funciona o script
-O código recebe um IP alvo e uma lista de portas (ex: 21, 80, 443).
-1. Ele tenta fazer uma conexão TCP (`socket.AF_INET, socket.SOCK_STREAM`).
-2. Se a conexão for bem-sucedida (código 0), ele avisa que a porta está **ABERTA**.
-3. A conexão é fechada imediatamente para economizar recursos.
+* **AF_INET (Address Family):** Especifica que o scanner utilizará endereços **IPv4**. Se o objetivo fosse escanear redes IPv6, seria necessário utilizar `AF_INET6`.
+* **SOCK_STREAM:** Define que o tipo de socket é orientado a fluxo (Stream), o que invoca o protocolo **TCP**. O TCP é escolhido para varreduras de precisão porque exige a confirmação da conexão, ao contrário do `SOCK_DGRAM` (UDP), que é "fire and forget".
 
-## 🚀 Como testar
-1. Clone este repositório.
-2. Certifique-se de ter o Python 3 instalado.
-3. Edite a variável `alvo` no script (pode testar com `localhost` ou `scanme.nmap.org`).
-4. Rode no terminal:
-   ```bash
-   python scanner.py
+---
 
+### 🤝 2. O Mecanismo de Conexão (TCP Three-Way Handshake)
+O script funciona tentando completar o aperto de mão de três vias. O estado da porta é determinado pela resposta do kernel do alvo:
+
+1.  **SYN (Synchronize):** O script envia um pacote com a flag SYN ativa para o IP e porta alvo.
+2.  **Resposta do Alvo:**
+    * **SYN-ACK:** A porta está **ABERTA** e pronta para receber conexões.
+    * **RST (Reset):** O alvo recebeu o pedido, mas a porta está **FECHADA**. O kernel do alvo encerra a tentativa imediatamente.
+    * **Sem Resposta (Timeout):** O pacote foi descartado (**DROP**) ou rejeitado por um firewall. A porta é considerada **FILTRADA**.
+
+---
+
+### 💻 3. Lógica de Programação: `connect_ex()` vs `connect()`
+A escolha do método `connect_ex()` é puramente técnica e voltada para a eficiência:
+
+* **`connect()`:** Lança uma exceção (erro) se a porta estiver fechada. Isso exigiria um bloco `try/except` para cada porta, tornando o código mais lento e verboso.
+* **`connect_ex()`:** Retorna um código de erro numérico direto do sistema (C-style error code).
+    * **Retorno 0:** A operação foi bem-sucedida (Porta Aberta).
+    * **Retorno 111 (Linux) / 10061 (Windows):** Conexão recusada (Porta Fechada).
+
+---
+
+### ⏱️ 4. Gestão de Timeouts e Comportamento de Firewall
+O uso de `socket.setdefaulttimeout()` é a única forma de evitar que o scanner fique "preso" em portas filtradas. 
+
+Quando um firewall está presente, ele não responde com um pacote RST (que fecharia a conexão na hora); ele simplesmente ignora o pacote SYN. Sem um timeout definido, o script esperaria o tempo padrão do sistema (que pode chegar a 30-60 segundos por porta), inviabilizando a ferramenta.
+
+---
+
+### 🛡️ 5. Visão de SOC (Detecção e Telemetria)
+Embora o script seja simples, o rastro digital gerado em um ambiente monitorado como o **Wazuh** é evidente:
+
+* **Sysmon Event ID 3 (Network Connection):** Cada tentativa de conexão gera um log. Um analista SOC identificará o ataque ao notar centenas de eventos ID 3 originados do mesmo `ProcessID` (seu script python) destinados a portas diferentes em um intervalo curto de tempo.
+* **Detecção de Varredura:** O SIEM utiliza contadores (thresholds). Se um único IP de origem gera mais de X conexões TCP falhas em Y segundos, o alerta de **Port Sweeping** ou **Reconnaissance** é disparado automaticamente.
+
+---
+
+### 📝 Resumo de Aprendizado Técnico
+* **Camada OSI:** O script opera na Camada 4 (Transporte).
+* **Primitivas de Rede:** Uso de `AF_INET` e `SOCK_STREAM` para manipulação de bits na rede.
+* **Tratamento de Erros:** Utilização de códigos de retorno do kernel para determinar estados de porta.
